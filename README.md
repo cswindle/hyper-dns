@@ -1,4 +1,4 @@
-# hyper-dns
+# Hyper DNS Resolver
 
 [![Crates.io - hyper-dns](https://img.shields.io/crates/v/hyper-dns.svg)](https://crates.io/crates/hyper-dns) [![Build Status](https://travis-ci.org/cswindle/hyper-dns.svg?branch=master)](https://travis-ci.org/cswindle/hyper-dns) [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 
