@@ -7,6 +7,9 @@ license = "MIT"
 repository = "https://github.com/cswindle/hyper-dns"
 keywords = ["hyper", "dns"]
 
+[badges]
+travis-ci = { repository = "cswindle/hyper-dns" }
+
 [dependencies]
 futures = "0.1.14"
 hyper = "0.10.12"
