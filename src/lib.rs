@@ -35,7 +35,7 @@ impl<C: NetworkConnector<Stream = S>, S: NetworkStream + Send> NetworkConnector
     /// * weight
     /// * priority
     /// It just takes a random entry in the DNS answers that are returned.
-    fn connect(&self, host: &str, _port: u16, scheme: &str) -> hyper::Result<S> {
+    fn connect(&self, host: &str, port: u16, scheme: &str) -> hyper::Result<S> {
 
         let mut io =
             tokio_core::reactor::Core::new().expect("Failed to create event loop for DNS query");
@@ -43,70 +43,72 @@ impl<C: NetworkConnector<Stream = S>, S: NetworkStream + Send> NetworkConnector
         let mut dns_client =
             trust_dns::client::ClientFuture::new(stream, sender, io.handle(), None);
 
-        // TODO: Check if this is a domain name or not before trying to use
-        // DNS resolution.
+        // Check if this is a domain name or not before trying to use DNS resolution.
+        let (host, port) = match host.parse() {
+            Err(_) => {
+                // Add a `.` to the end of the host so that we can query the domain records.
+                let name = trust_dns::rr::Name::parse(&format!("{}.", host), None).unwrap();
 
-        // Add a `.` to the end of the host so that we can query the domain records.
-        let name = trust_dns::rr::Name::parse(&format!("{}.", host), None).unwrap();
+                match io.run(dns_client.query(name,
+                                              trust_dns::rr::DNSClass::IN,
+                                              trust_dns::rr::RecordType::SRV)) {
+                    Ok(res) => {
+                        let answers = res.get_answers();
 
-        match io.run(dns_client.query(name,
-                                      trust_dns::rr::DNSClass::IN,
-                                      trust_dns::rr::RecordType::SRV)) {
-            Ok(res) => {
-                let answers = res.get_answers();
-
-                if answers.is_empty() {
-                    return Err(std::io::Error::new(std::io::ErrorKind::Other,
-                                                   "No valid DNS answers")
-                                       .into());
-                }
-
-                let mut rng = rand::thread_rng();
-                let answer = rng.choose(answers)
-                    .expect("Sort out what to return here");
-
-                let srv = match *answer.get_rdata() {
-                    trust_dns::rr::RData::SRV(ref srv) => srv,
-                    _ => {
-                        return Err(std::io::Error::new(std::io::ErrorKind::Other,
-                                                       "Unexpected DNS response")
-                                           .into())
-                    }
-                };
-
-                let target = srv.get_target();
-
-                // Now need to lookup the target in the additional information
-                let additionals = res.get_additionals();
-
-                let entry = additionals
-                    .iter()
-                    .find(|additional| additional.get_name() == target);
-
-                if let Some(entry) = entry {
-                    let addr = match *entry.get_rdata() {
-                        trust_dns::rr::RData::A(ref addr) => addr,
-                        _ => {
+                        if answers.is_empty() {
                             return Err(std::io::Error::new(std::io::ErrorKind::Other,
-                                                           "Did not receive a valid record")
-                                               .into())
+                                                           "No valid DNS answers")
+                                               .into());
                         }
-                    };
 
-                    self.connector
-                        .connect(&addr.to_string(), srv.get_port(), scheme)
-                } else {
-                    Err(std::io::Error::new(std::io::ErrorKind::Other,
-                                            "Did not receive a valid record")
+                        let mut rng = rand::thread_rng();
+                        let answer = rng.choose(answers)
+                            .expect("Sort out what to return here");
+
+                        let srv = match *answer.get_rdata() {
+                            trust_dns::rr::RData::SRV(ref srv) => srv,
+                            _ => {
+                                return Err(std::io::Error::new(std::io::ErrorKind::Other,
+                                                               "Unexpected DNS response")
+                                                   .into())
+                            }
+                        };
+
+                        let target = srv.get_target();
+
+                        // Now need to lookup the target in the additional information
+                        let additionals = res.get_additionals();
+
+                        let entry = additionals
+                            .iter()
+                            .find(|additional| additional.get_name() == target);
+
+                        if let Some(entry) = entry {
+                            let addr = match *entry.get_rdata() {
+                                trust_dns::rr::RData::A(ref addr) => addr,
+                                _ => {
+                                    return Err(std::io::Error::new(std::io::ErrorKind::Other,
+                                                                   "Did not receive a valid record")
+                                                       .into())
+                                }
+                            };
+                            (addr.to_string(), srv.get_port())
+                        } else {
+                            return Err(std::io::Error::new(std::io::ErrorKind::Other,
+                                                    "Did not receive a valid record")
+                                        .into())
+                        }
+
+                    }
+                    _ => {
+                        return Err(std::io::Error::new(std::io::ErrorKind::Other, "Failed to query DNS server")
                                 .into())
+                    }
                 }
-
             }
-            _ => {
-                Err(std::io::Error::new(std::io::ErrorKind::Other, "Failed to query DNS server")
-                        .into())
-            }
-        }
+            Ok(std::net::Ipv4Addr { .. }) => (host.to_string(), port),
+        };
+        self.connector.connect(&host, port, scheme)
     }
 }
 
