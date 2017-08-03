@@ -13,6 +13,7 @@ use hyper::net::{NetworkConnector, NetworkStream};
 pub enum RecordType {
     A,
     SRV,
+    AUTO,
 }
 
 /// A connector that wraps another connector and provides custom DNS resolution.
@@ -25,7 +26,7 @@ pub struct DnsConnector<C: NetworkConnector> {
 
 impl<C: NetworkConnector> DnsConnector<C> {
     pub fn new(dns_addr: std::net::SocketAddr, connector: C) -> DnsConnector<C> {
-        Self::new_with_resolve_type(dns_addr, connector, RecordType::SRV)
+        Self::new_with_resolve_type(dns_addr, connector, RecordType::AUTO)
     }
 
     pub fn new_with_resolve_type(dns_addr: std::net::SocketAddr,
@@ -60,13 +61,23 @@ impl<C: NetworkConnector<Stream = S>, S: NetworkStream + Send> NetworkConnector
         // Check if this is a domain name or not before trying to use DNS resolution.
         let (host, port) = match host.parse() {
             Err(_) => {
+
                 // Add a `.` to the end of the host so that we can query the domain records.
                 let name = trust_dns::rr::Name::parse(&format!("{}.", host), None).unwrap();
 
-                let trust_record_type = if let RecordType::A = self.record_type {
-                    trust_dns::rr::RecordType::A
-                } else {
-                    trust_dns::rr::RecordType::SRV
+                let trust_record_type = match self.record_type {
+                    RecordType::A => trust_dns::rr::RecordType::A,
+                    RecordType::SRV => trust_dns::rr::RecordType::SRV,
+                    RecordType::AUTO => {
+                        // If the port is a standard HTTP port (80, or 443), then assume
+                        // one was not provided and perform SRV lookup, otherwise lookup
+                        // A records.
+                        if (port == 80) || (port == 443) {
+                            trust_dns::rr::RecordType::SRV
+                        } else {
+                            trust_dns::rr::RecordType::A
+                        }
+                    }
                 };
 
                 match io.run(dns_client.query(name.clone(),
@@ -84,8 +95,8 @@ impl<C: NetworkConnector<Stream = S>, S: NetworkStream + Send> NetworkConnector
                         let mut rng = rand::thread_rng();
 
                         // First find the SRV records if they were requested
-                        let (target, a_records, new_port) = if let RecordType::SRV =
-                            self.record_type {
+                        let (target, a_records, new_port) = if let trust_dns::rr::RecordType::SRV =
+                            trust_record_type {
                             let answer = rng.choose(answers).expect("Sort out what to return here");
 
                             let srv = match *answer.get_rdata() {
