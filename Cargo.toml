@@ -2,7 +2,7 @@
 authors = ["Chris Swindle <christopher.swindle@metaswitch.com>"]
 name = "hyper-dns"
 description = "This crates provides a NetworkConnector for Hyper which adds the ability to perform SRV lookups on URLs."
-version = "0.2.0"
+version = "0.2.1"
 license = "MIT"
 repository = "https://github.com/cswindle/hyper-dns"
 keywords = ["hyper", "dns"]
@@ -15,4 +15,4 @@ futures = "0.1.14"
 hyper = "0.10.12"
 rand = "0.3.15"
 tokio-core = "0.1.8"
-trust-dns = "0.13.0"
+trust-dns = { version = "0.13.0", default-features = false }
