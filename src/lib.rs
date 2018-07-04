@@ -1,5 +1,5 @@
+//! DNS resolver for Hyper
 
-extern crate futures;
 extern crate hyper;
 extern crate rand;
 extern crate tokio_core;
@@ -9,10 +9,14 @@ use trust_dns::client::ClientHandle;
 use rand::Rng;
 use hyper::net::{NetworkConnector, NetworkStream};
 
+/// Docs
 #[derive(Debug, Clone)]
 pub enum RecordType {
+    /// A
     A,
+    /// SRV
     SRV,
+    /// AUTO
     AUTO,
 }
 
@@ -24,11 +28,14 @@ pub struct DnsConnector<C: NetworkConnector> {
     record_type: RecordType,
 }
 
+/// Docs
 impl<C: NetworkConnector> DnsConnector<C> {
+    /// Docs
     pub fn new(dns_addr: std::net::SocketAddr, connector: C) -> DnsConnector<C> {
         Self::new_with_resolve_type(dns_addr, connector, RecordType::AUTO)
     }
 
+    /// Docs
     pub fn new_with_resolve_type(dns_addr: std::net::SocketAddr,
                                  connector: C,
                                  record_type: RecordType)
@@ -54,9 +61,9 @@ impl<C: NetworkConnector<Stream = S>, S: NetworkStream + Send> NetworkConnector
 
         let mut io = tokio_core::reactor::Core::new()
             .expect("Failed to create event loop for DNS query");
-        let (stream, sender) = trust_dns::udp::UdpClientStream::new(self.dns_addr, io.handle());
+        let (stream, sender) = trust_dns::udp::UdpClientStream::new(self.dns_addr, &io.handle());
         let mut dns_client =
-            trust_dns::client::ClientFuture::new(stream, sender, io.handle(), None);
+            trust_dns::client::ClientFuture::new(stream, sender, &io.handle(), None);
 
         // Check if this is a domain name or not before trying to use DNS resolution.
         let (host, port) = match host.parse() {
@@ -75,6 +82,7 @@ impl<C: NetworkConnector<Stream = S>, S: NetworkStream + Send> NetworkConnector
                         if (port == 80) || (port == 443) {
                             trust_dns::rr::RecordType::SRV
                         } else {
+                            println!("Using A record lookup for: {}:{}", host, port);
                             trust_dns::rr::RecordType::A
                         }
                     }
@@ -84,7 +92,7 @@ impl<C: NetworkConnector<Stream = S>, S: NetworkStream + Send> NetworkConnector
                                               trust_dns::rr::DNSClass::IN,
                                               trust_record_type)) {
                     Ok(res) => {
-                        let answers = res.get_answers();
+                        let answers = res.answers();
 
                         if answers.is_empty() {
                             return Err(std::io::Error::new(std::io::ErrorKind::Other,
@@ -99,7 +107,7 @@ impl<C: NetworkConnector<Stream = S>, S: NetworkStream + Send> NetworkConnector
                             trust_record_type {
                             let answer = rng.choose(answers).expect("Sort out what to return here");
 
-                            let srv = match *answer.get_rdata() {
+                            let srv = match *answer.rdata() {
                                 trust_dns::rr::RData::SRV(ref srv) => srv,
                                 _ => {
                                     return Err(std::io::Error::new(std::io::ErrorKind::Other,
@@ -108,17 +116,17 @@ impl<C: NetworkConnector<Stream = S>, S: NetworkStream + Send> NetworkConnector
                                 }
                             };
 
-                            (srv.get_target(), res.get_additionals(), srv.get_port())
+                            (srv.target(), res.additionals(), srv.port())
                         } else {
                             // For A record requests it is the domain name that
                             // we want to use.
                             (&name, answers, port)
                         };
 
-                        let entry = a_records.iter().find(|record| record.get_name() == target);
+                        let entry = a_records.iter().find(|record| record.name() == target);
 
                         if let Some(entry) = entry {
-                            let addr = match *entry.get_rdata() {
+                            let addr = match *entry.rdata() {
                                 trust_dns::rr::RData::A(ref addr) => addr,
                                 _ => {
                                     return Err(std::io::Error::new(std::io::ErrorKind::Other,
