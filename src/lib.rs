@@ -64,7 +64,7 @@ impl<C: NetworkConnector<Stream = S>, S: NetworkStream + Send> NetworkConnector
 
         let mut io = tokio_core::reactor::Core::new()
             .expect("Failed to create event loop for DNS query");
-        let (stream, sender) = trust_dns::udp::UdpClientStream::new(self.dns_addr, &io.handle());
+        let (stream, sender) = trust_dns::tcp::TcpClientStream::new(self.dns_addr, &io.handle());
 
         // We would expect a DNS request to be responded to quickly, but add a timeout
         // to ensure that we don't wait for ever if the DNS server does not respond.
