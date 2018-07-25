@@ -1,5 +1,7 @@
 //! DNS resolver for Hyper
 
+#[macro_use]
+extern crate log;
 extern crate hyper;
 extern crate rand;
 extern crate tokio_core;
@@ -8,6 +10,7 @@ extern crate trust_dns;
 use trust_dns::client::ClientHandle;
 use rand::Rng;
 use hyper::net::{NetworkConnector, NetworkStream};
+use std::time::Duration;
 
 /// Docs
 #[derive(Debug, Clone)]
@@ -61,13 +64,24 @@ impl<C: NetworkConnector<Stream = S>, S: NetworkStream + Send> NetworkConnector
 
         let mut io = tokio_core::reactor::Core::new()
             .expect("Failed to create event loop for DNS query");
-        let (stream, sender) = trust_dns::udp::UdpClientStream::new(self.dns_addr, &io.handle());
+        let (stream, sender) = trust_dns::tcp::TcpClientStream::new(self.dns_addr, &io.handle());
+
+        // We would expect a DNS request to be responded to quickly, but add a timeout
+        // to ensure that we don't wait for ever if the DNS server does not respond.
+        let timeout = Duration::from_millis(30000);
         let mut dns_client =
-            trust_dns::client::ClientFuture::new(stream, sender, &io.handle(), None);
+            trust_dns::client::ClientFuture::with_timeout(
+                stream,
+                sender,
+                &io.handle(),
+                timeout,
+                None);
 
         // Check if this is a domain name or not before trying to use DNS resolution.
         let (host, port) = match host.parse() {
             Err(_) => {
+
+                debug!("Trying to resolve {}://{}", scheme, &host);
 
                 // Add a `.` to the end of the host so that we can query the domain records.
                 let name = trust_dns::rr::Name::parse(&format!("{}.", host), None).unwrap();
@@ -82,11 +96,13 @@ impl<C: NetworkConnector<Stream = S>, S: NetworkStream + Send> NetworkConnector
                         if (port == 80) || (port == 443) {
                             trust_dns::rr::RecordType::SRV
                         } else {
-                            println!("Using A record lookup for: {}:{}", host, port);
+                            debug!("Using A record lookup for: {}", &host);
                             trust_dns::rr::RecordType::A
                         }
                     }
                 };
+
+                debug!("Sending DNS request");
 
                 match io.run(dns_client.query(name.clone(),
                                               trust_dns::rr::DNSClass::IN,
@@ -152,6 +168,8 @@ impl<C: NetworkConnector<Stream = S>, S: NetworkStream + Send> NetworkConnector
             }
             Ok(std::net::Ipv4Addr { .. }) => (host.to_string(), port),
         };
+
+        debug!("Resolved request to {}://{}:{}", scheme, &host, port);
 
         self.connector.connect(&host, port, scheme)
     }
