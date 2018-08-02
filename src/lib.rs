@@ -7,6 +7,7 @@ extern crate rand;
 extern crate tokio_core;
 extern crate tokio_reactor;
 extern crate trust_dns;
+extern crate futures;
 
 use trust_dns::client::ClientHandle;
 use rand::Rng;
@@ -15,6 +16,8 @@ use std::time::Duration;
 use tokio_reactor::Handle;
 use std::io;
 use std::sync::Arc;
+use hyper::rt::Future;
+use futures::future::err;
 
 /// Docs
 #[derive(Debug, Clone)]
@@ -89,7 +92,11 @@ where C: Connect<Error=io::Error>,
 
         // Check if this is a domain name or not before trying to use DNS resolution.
 
-        match dst.host().parse() {
+        let host = dst.host();
+        let port = dst.port();
+        let scheme = dst.scheme();
+
+        match host.parse() {
             Ok(std::net::Ipv4Addr { .. }) => {
                 // Nothing to do, so just pass it along to the main connector
                 connector.connect(dst)
@@ -104,10 +111,9 @@ where C: Connect<Error=io::Error>,
                     RecordType::A => trust_dns::rr::RecordType::A,
                     RecordType::SRV => trust_dns::rr::RecordType::SRV,
                     RecordType::AUTO => {
-                        // If the port is a standard HTTP port (80, or 443), then assume
-                        // one was not provided and perform SRV lookup, otherwise lookup
+                        // If the port is not provided, then and perform SRV lookup, otherwise lookup
                         // A records.
-                        if (port == 80) || (port == 443) {
+                        if port.is_none() {
                             trust_dns::rr::RecordType::SRV
                         } else {
                             debug!("Using A record lookup for: {}", &host);
@@ -119,9 +125,11 @@ where C: Connect<Error=io::Error>,
                 debug!("Sending DNS request");
 
                 dns_client
-                    .query(name.clone(),
-                           trust_dns::rr::DNSClass::IN,
-                           trust_record_type)
+                    .and_then(|client| {
+                        client.query(name.clone(),
+                        trust_dns::rr::DNSClass::IN,
+                        trust_record_type)
+                    })
                     .and_then(|res| {
                         let answers = res.answers();
 
