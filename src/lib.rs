@@ -17,7 +17,7 @@ use tokio_reactor::Handle;
 use std::io;
 use std::sync::Arc;
 use hyper::rt::Future;
-use futures::future::err;
+use futures::future;
 
 /// Docs
 #[derive(Debug, Clone)]
@@ -124,17 +124,22 @@ where C: Connect<Error=io::Error>,
 
                 debug!("Sending DNS request");
 
-                dns_client
+                let future: Self::Future = dns_client
                     .and_then(|client| {
                         client.query(name.clone(),
                         trust_dns::rr::DNSClass::IN,
                         trust_record_type)
                     })
+                    .or_else(|err| {
+                        return future::err(std::io::Error::new(std::io::ErrorKind::Other,
+                                                       "Failed to query DNS server")
+                                           .into());
+                    })
                     .and_then(|res| {
                         let answers = res.answers();
 
                         if answers.is_empty() {
-                            return err(std::io::Error::new(std::io::ErrorKind::Other,
+                            return future::err(std::io::Error::new(std::io::ErrorKind::Other,
                                                            "No valid DNS answers")
                                                .into());
                         }
@@ -149,13 +154,13 @@ where C: Connect<Error=io::Error>,
                             let srv = match *answer.rdata() {
                                 trust_dns::rr::RData::SRV(ref srv) => srv,
                                 _ => {
-                                    return err(std::io::Error::new(std::io::ErrorKind::Other,
+                                    return future::err(std::io::Error::new(std::io::ErrorKind::Other,
                                                                    "Unexpected DNS response")
                                                        .into())
                                 }
                             };
 
-                            (srv.target(), res.additionals(), srv.port())
+                            (srv.target(), res.additionals(), Some(srv.port()))
                         } else {
                             // For A record requests it is the domain name that
                             // we want to use.
@@ -168,27 +173,37 @@ where C: Connect<Error=io::Error>,
                             let addr = match *entry.rdata() {
                                 trust_dns::rr::RData::A(ref addr) => addr,
                                 _ => {
-                                    return err(std::io::Error::new(std::io::ErrorKind::Other,
+                                    return future::err(std::io::Error::new(std::io::ErrorKind::Other,
                                                                    "Did not receive a valid record")
                                                        .into())
                                 }
                             };
 
-                            (addr.to_string(), new_port)
+                            future::ok((addr.to_string(), new_port))
                         } else {
-                            return err(std::io::Error::new(std::io::ErrorKind::Other,
+                            return future::err(std::io::Error::new(std::io::ErrorKind::Other,
                                                            "Did not receive a valid record")
                                                .into());
                         }
                     })
-                    .and_then(|ip, port| {
-                        debug!("Resolved request to {}://{}:{}", scheme, &host, port);
+                    .and_then(|(ip, port)| {
+
+                        if let Some(port) = port {
+                            debug!("Resolved request to {}://{}:{}", scheme, &ip, port);
+                        } else {
+                            debug!("Resolved request to {}://{}", scheme, &ip);
+                        }
 
                         let mut new_dst = dst.clone();
-                        new_dst.set_host(ip);
-                        new_dst.set_port(port);
+                        new_dst.set_host(&ip);
+
+                        if let Some(port) = port {
+                            new_dst.set_port(port);                            
+                        }
                         connector.connect(new_dst)
-                    })
+                    });
+
+                future
             }
         }
     }
