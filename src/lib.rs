@@ -5,13 +5,16 @@ extern crate log;
 extern crate hyper;
 extern crate rand;
 extern crate tokio_core;
+extern crate tokio_reactor;
 extern crate trust_dns;
 
 use trust_dns::client::ClientHandle;
 use rand::Rng;
-use hyper::net::{NetworkConnector, NetworkStream};
+use hyper::client::connect::{Connect, Destination, HttpConnector};
 use std::time::Duration;
 use tokio_reactor::Handle;
+use std::io;
+use std::sync::Arc;
 
 /// Docs
 #[derive(Debug, Clone)]
@@ -26,15 +29,16 @@ pub enum RecordType {
 
 /// A connector that wraps another connector and provides custom DNS resolution.
 #[derive(Debug, Clone)]
-pub struct DnsConnector<T, S> {
-    connector: T,
+pub struct DnsConnector<C> {
+    connector: C,
     record_type: RecordType,
-    dns_client: trust_dns::client::ClientFuture<S>,
+    // dns_client: trust_dns::client::ClientFuture<S>,
+    dns_addr: std::net::SocketAddr,
     force_https: bool,
 }
 
-impl<T, S> DnsConnector<T, S>
-where T: Connect
+impl<C> DnsConnector<C>
+where C: Connect,
 {
     pub fn new(dns_addr: std::net::SocketAddr, connector: C) -> DnsConnector<C> {
         Self::new_with_resolve_type(dns_addr, connector, RecordType::AUTO)
@@ -46,47 +50,46 @@ where T: Connect
                                  record_type: RecordType)
                                  -> DnsConnector<C> {
 
-        let handle = Handle::default();
-
-        let (stream, sender) = trust_dns::tcp::TcpClientStream::new(dns_addr, &handle);
-
-        // We would expect a DNS request to be responded to quickly, but add a timeout
-        // to ensure that we don't wait for ever if the DNS server does not respond.
-        let timeout = Duration::from_millis(30000);
-        let mut dns_client =
-            trust_dns::client::ClientFuture::with_timeout(
-                stream,
-                sender,
-                &handle,
-                timeout,
-                None);
-
         DnsConnector {
             connector: connector,
             record_type: record_type,
-            dns_client: dns_client,
+            //dns_client: dns_client,
+            dns_addr: dns_addr,
             force_https: true,
         }
     }
 }
 
-impl<T, S> Connect for DnsConnector<T, S>
-where T: Connect<Error=io::Error>,
-      T::Transport: 'static,
-      T::Future: 'static,
+impl<C> Connect for DnsConnector<C>
+where C: Connect<Error=io::Error>,
+      C: Clone,
+      C::Transport: 'static,
+      C::Future: 'static,
 {
-    type Transport = T::Transport;
+    type Transport = C::Transport;
     type Error = io::Error;
-    type Future = T::Future;
+    type Future = C::Future;
 
     fn connect(&self, dst: Destination) -> Self::Future {
 
         let connector = self.connector.clone();
         let force_https = self.force_https;
 
+        // We would expect a DNS request to be responded to quickly, but add a timeout
+        // to ensure that we don't wait for ever if the DNS server does not respond.
+        let timeout = Duration::from_millis(30000);
+
+        let (stream, sender) = trust_dns::tcp::TcpClientStream::with_timeout(self.dns_addr, timeout);
+
+        let mut dns_client =
+            trust_dns::client::ClientFuture::new(
+                stream,
+                sender,
+                None);
+
         // Check if this is a domain name or not before trying to use DNS resolution.
 
-        let (dst.host(), dst.port()) = match dst.host().parse() {
+        match dst.host().parse() {
             Ok(std::net::Ipv4Addr { .. }) => {
                 // Nothing to do, so just pass it along to the main connector
                 connector.connect(dst)
