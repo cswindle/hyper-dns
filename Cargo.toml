@@ -5,7 +5,7 @@ keywords = ["hyper", "dns"]
 license = "MIT"
 name = "hyper-dns"
 repository = "https://github.com/cswindle/hyper-dns"
-version = "0.2.2"
+version = "0.12.0"
 
 [badges]
 
@@ -14,10 +14,11 @@ repository = "cswindle/hyper-dns"
 
 [dependencies]
 futures = "0.1.14"
-hyper = "0.10.12"
+hyper = "0.12"
 log = "0.4.3"
 rand = "0.3.15"
 tokio-core = "0.1.8"
+tokio-reactor = "0.1"
 
 [dependencies.trust-dns]
 default-features = false

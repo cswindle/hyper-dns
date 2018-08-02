@@ -11,6 +11,7 @@ use trust_dns::client::ClientHandle;
 use rand::Rng;
 use hyper::net::{NetworkConnector, NetworkStream};
 use std::time::Duration;
+use tokio_reactor::Handle;
 
 /// Docs
 #[derive(Debug, Clone)]
@@ -25,15 +26,16 @@ pub enum RecordType {
 
 /// A connector that wraps another connector and provides custom DNS resolution.
 #[derive(Debug, Clone)]
-pub struct DnsConnector<C: NetworkConnector> {
-    connector: C,
-    dns_addr: std::net::SocketAddr,
+pub struct DnsConnector<T, S> {
+    connector: T,
     record_type: RecordType,
+    dns_client: trust_dns::client::ClientFuture<S>,
+    force_https: bool,
 }
 
-/// Docs
-impl<C: NetworkConnector> DnsConnector<C> {
-    /// Docs
+impl<T, S> DnsConnector<T, S>
+where T: Connect
+{
     pub fn new(dns_addr: std::net::SocketAddr, connector: C) -> DnsConnector<C> {
         Self::new_with_resolve_type(dns_addr, connector, RecordType::AUTO)
     }
@@ -43,28 +45,10 @@ impl<C: NetworkConnector> DnsConnector<C> {
                                  connector: C,
                                  record_type: RecordType)
                                  -> DnsConnector<C> {
-        DnsConnector {
-            connector: connector,
-            dns_addr: dns_addr,
-            record_type: record_type,
-        }
-    }
-}
 
-impl<C: NetworkConnector<Stream = S>, S: NetworkStream + Send> NetworkConnector
-    for DnsConnector<C> {
-    type Stream = S;
+        let handle = Handle::default();
 
-    /// Performs DNS SRV resolution, then calls into the inner connector with the results.
-    /// Note that currently this does not take into account the following in the SRV record:
-    /// * weight
-    /// * priority
-    /// It just takes a random entry in the DNS answers that are returned.
-    fn connect(&self, host: &str, port: u16, scheme: &str) -> hyper::Result<S> {
-
-        let mut io = tokio_core::reactor::Core::new()
-            .expect("Failed to create event loop for DNS query");
-        let (stream, sender) = trust_dns::tcp::TcpClientStream::new(self.dns_addr, &io.handle());
+        let (stream, sender) = trust_dns::tcp::TcpClientStream::new(dns_addr, &handle);
 
         // We would expect a DNS request to be responded to quickly, but add a timeout
         // to ensure that we don't wait for ever if the DNS server does not respond.
@@ -73,14 +57,41 @@ impl<C: NetworkConnector<Stream = S>, S: NetworkStream + Send> NetworkConnector
             trust_dns::client::ClientFuture::with_timeout(
                 stream,
                 sender,
-                &io.handle(),
+                &handle,
                 timeout,
                 None);
 
-        // Check if this is a domain name or not before trying to use DNS resolution.
-        let (host, port) = match host.parse() {
-            Err(_) => {
+        DnsConnector {
+            connector: connector,
+            record_type: record_type,
+            dns_client: dns_client,
+            force_https: true,
+        }
+    }
+}
 
+impl<T, S> Connect for DnsConnector<T, S>
+where T: Connect<Error=io::Error>,
+      T::Transport: 'static,
+      T::Future: 'static,
+{
+    type Transport = T::Transport;
+    type Error = io::Error;
+    type Future = T::Future;
+
+    fn connect(&self, dst: Destination) -> Self::Future {
+
+        let connector = self.connector.clone();
+        let force_https = self.force_https;
+
+        // Check if this is a domain name or not before trying to use DNS resolution.
+
+        let (dst.host(), dst.port()) = match dst.host().parse() {
+            Ok(std::net::Ipv4Addr { .. }) => {
+                // Nothing to do, so just pass it along to the main connector
+                connector.connect(dst)
+            }
+            Err(_) => {
                 debug!("Trying to resolve {}://{}", scheme, &host);
 
                 // Add a `.` to the end of the host so that we can query the domain records.
@@ -104,14 +115,15 @@ impl<C: NetworkConnector<Stream = S>, S: NetworkStream + Send> NetworkConnector
 
                 debug!("Sending DNS request");
 
-                match io.run(dns_client.query(name.clone(),
-                                              trust_dns::rr::DNSClass::IN,
-                                              trust_record_type)) {
-                    Ok(res) => {
+                dns_client
+                    .query(name.clone(),
+                           trust_dns::rr::DNSClass::IN,
+                           trust_record_type)
+                    .and_then(|res| {
                         let answers = res.answers();
 
                         if answers.is_empty() {
-                            return Err(std::io::Error::new(std::io::ErrorKind::Other,
+                            return err(std::io::Error::new(std::io::ErrorKind::Other,
                                                            "No valid DNS answers")
                                                .into());
                         }
@@ -126,7 +138,7 @@ impl<C: NetworkConnector<Stream = S>, S: NetworkStream + Send> NetworkConnector
                             let srv = match *answer.rdata() {
                                 trust_dns::rr::RData::SRV(ref srv) => srv,
                                 _ => {
-                                    return Err(std::io::Error::new(std::io::ErrorKind::Other,
+                                    return err(std::io::Error::new(std::io::ErrorKind::Other,
                                                                    "Unexpected DNS response")
                                                        .into())
                                 }
@@ -145,7 +157,7 @@ impl<C: NetworkConnector<Stream = S>, S: NetworkStream + Send> NetworkConnector
                             let addr = match *entry.rdata() {
                                 trust_dns::rr::RData::A(ref addr) => addr,
                                 _ => {
-                                    return Err(std::io::Error::new(std::io::ErrorKind::Other,
+                                    return err(std::io::Error::new(std::io::ErrorKind::Other,
                                                                    "Did not receive a valid record")
                                                        .into())
                                 }
@@ -153,25 +165,21 @@ impl<C: NetworkConnector<Stream = S>, S: NetworkStream + Send> NetworkConnector
 
                             (addr.to_string(), new_port)
                         } else {
-                            return Err(std::io::Error::new(std::io::ErrorKind::Other,
+                            return err(std::io::Error::new(std::io::ErrorKind::Other,
                                                            "Did not receive a valid record")
                                                .into());
                         }
+                    })
+                    .and_then(|ip, port| {
+                        debug!("Resolved request to {}://{}:{}", scheme, &host, port);
 
-                    }
-                    _ => {
-                        return Err(std::io::Error::new(std::io::ErrorKind::Other,
-                                                       "Failed to query DNS server")
-                                           .into())
-                    }
-                }
+                        let mut new_dst = dst.clone();
+                        new_dst.set_host(ip);
+                        new_dst.set_port(port);
+                        connector.connect(new_dst)
+                    })
             }
-            Ok(std::net::Ipv4Addr { .. }) => (host.to_string(), port),
-        };
-
-        debug!("Resolved request to {}://{}:{}", scheme, &host, port);
-
-        self.connector.connect(&host, port, scheme)
+        }
     }
 }
 
