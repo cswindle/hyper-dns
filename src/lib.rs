@@ -54,7 +54,6 @@ where C: Connect,
         DnsConnector {
             connector: connector,
             record_type: record_type,
-            //dns_client: dns_client,
             dns_addr: dns_addr,
             force_https: true,
         }
@@ -90,9 +89,6 @@ where C: 'static,
                 None);
 
         // Check if this is a domain name or not before trying to use DNS resolution.
-
-        // let dest_clone = dst.clone();
-
         match dst.host().to_string().parse() {
             Ok(std::net::Ipv4Addr { .. }) => {
                 // Nothing to do, so just pass it along to the main connector
