@@ -64,14 +64,15 @@ where C: Connect,
 }
 
 impl<C> Connect for DnsConnector<C>
-where C: Connect<Error=io::Error>,
+where C: 'static,
+      C: Connect<Error=io::Error>,
       C: Clone,
-      C::Transport: 'static,
-      C::Future: 'static,
+      C::Transport: Send + 'static,
+      C::Future: Send + 'static,
 {
     type Transport = C::Transport;
     type Error = io::Error;
-    type Future = C::Future;
+    type Future = Box<Future<Item=<C::Future as Future>::Item, Error=<C::Future as Future>::Error> + Send>;
 
     fn connect(&self, dst: Destination) -> Self::Future {
 
@@ -84,7 +85,7 @@ where C: Connect<Error=io::Error>,
 
         let (stream, sender) = trust_dns::tcp::TcpClientStream::with_timeout(self.dns_addr, timeout);
 
-        let mut dns_client =
+        let dns_client =
             trust_dns::client::ClientFuture::new(
                 stream,
                 sender,
@@ -92,16 +93,18 @@ where C: Connect<Error=io::Error>,
 
         // Check if this is a domain name or not before trying to use DNS resolution.
 
-        let host = dst.host();
-        let port = dst.port();
-        let scheme = dst.scheme();
+        // let dest_clone = dst.clone();
 
-        match host.parse() {
+        match dst.host().to_string().parse() {
             Ok(std::net::Ipv4Addr { .. }) => {
                 // Nothing to do, so just pass it along to the main connector
-                connector.connect(dst)
+                Box::new(connector.connect(dst.clone()))
             }
             Err(_) => {
+                let port = dst.port().clone();
+                let scheme = dst.scheme().to_string();
+                let host = dst.host().to_string();
+
                 debug!("Trying to resolve {}://{}", scheme, &host);
 
                 // Add a `.` to the end of the host so that we can query the domain records.
@@ -124,9 +127,11 @@ where C: Connect<Error=io::Error>,
 
                 debug!("Sending DNS request");
 
-                let future: Self::Future = dns_client
-                    .and_then(|client| {
-                        client.query(name.clone(),
+                let name_clone = name.clone();
+
+                let future = dns_client
+                    .and_then(move |mut client| {
+                        client.query(name_clone.clone(),
                         trust_dns::rr::DNSClass::IN,
                         trust_record_type)
                     })
@@ -135,7 +140,7 @@ where C: Connect<Error=io::Error>,
                                                        "Failed to query DNS server")
                                            .into());
                     })
-                    .and_then(|res| {
+                    .and_then(move |res| {
                         let answers = res.answers();
 
                         if answers.is_empty() {
@@ -160,14 +165,14 @@ where C: Connect<Error=io::Error>,
                                 }
                             };
 
-                            (srv.target(), res.additionals(), Some(srv.port()))
+                            (srv.target().clone(), res.additionals(), Some(srv.port()))
                         } else {
                             // For A record requests it is the domain name that
                             // we want to use.
-                            (&name, answers, port)
+                            (name.clone(), answers, port)
                         };
 
-                        let entry = a_records.iter().find(|record| record.name() == target);
+                        let entry = a_records.iter().find(|record| record.name() == &target);
 
                         if let Some(entry) = entry {
                             let addr = match *entry.rdata() {
@@ -186,7 +191,7 @@ where C: Connect<Error=io::Error>,
                                                .into());
                         }
                     })
-                    .and_then(|(ip, port)| {
+                    .and_then(move |(ip, port)| {
 
                         if let Some(port) = port {
                             debug!("Resolved request to {}://{}:{}", scheme, &ip, port);
@@ -203,7 +208,7 @@ where C: Connect<Error=io::Error>,
                         connector.connect(new_dst)
                     });
 
-                future
+                Box::new(future)
             }
         }
     }
