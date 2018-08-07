@@ -11,11 +11,9 @@ extern crate futures;
 
 use trust_dns::client::ClientHandle;
 use rand::Rng;
-use hyper::client::connect::{Connect, Destination, HttpConnector};
+use hyper::client::connect::{Connect, Destination};
 use std::time::Duration;
-use tokio_reactor::Handle;
 use std::io;
-use std::sync::Arc;
 use hyper::rt::Future;
 use futures::future;
 
@@ -135,7 +133,7 @@ where C: 'static,
                         trust_dns::rr::DNSClass::IN,
                         trust_record_type)
                     })
-                    .or_else(|err| {
+                    .or_else(|_| {
                         return future::err(std::io::Error::new(std::io::ErrorKind::Other,
                                                        "Failed to query DNS server")
                                            .into());
@@ -200,10 +198,14 @@ where C: 'static,
                         }
 
                         let mut new_dst = dst.clone();
-                        new_dst.set_host(&ip);
+                        new_dst.set_host(&ip).expect("Failed to set host");
+
+                        if force_https {
+                            new_dst.set_scheme("HTTPS").expect("Failed to set scheme to HTTPS");
+                        }
 
                         if let Some(port) = port {
-                            new_dst.set_port(port);                            
+                            new_dst.set_port(port);
                         }
                         connector.connect(new_dst)
                     });
