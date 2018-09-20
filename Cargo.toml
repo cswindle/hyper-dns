@@ -16,9 +16,9 @@ repository = "cswindle/hyper-dns"
 futures = "0.1.14"
 hyper = "0.10.12"
 log = "0.4.3"
-rand = "0.3.15"
-tokio-core = "0.1.8"
+rand = "0.5.5"
+tokio = "0.1.8"
 
 [dependencies.trust-dns]
 default-features = false
-version = "0.13.0"
+version = "0.14.0"
