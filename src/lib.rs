@@ -4,7 +4,7 @@
 extern crate log;
 extern crate hyper;
 extern crate rand;
-extern crate tokio_core;
+extern crate tokio;
 extern crate trust_dns;
 
 use trust_dns::client::ClientHandle;
@@ -62,23 +62,23 @@ impl<C: NetworkConnector<Stream = S>, S: NetworkStream + Send> NetworkConnector
     /// It just takes a random entry in the DNS answers that are returned.
     fn connect(&self, host: &str, port: u16, scheme: &str) -> hyper::Result<S> {
 
-        let mut io = tokio_core::reactor::Core::new()
+        let mut runtime = tokio::runtime::current_thread::Runtime::new()
             .expect("Failed to create event loop for DNS query");
-        let (stream, sender) = trust_dns::tcp::TcpClientStream::new(self.dns_addr, &io.handle());
+        let (stream, sender) = trust_dns::tcp::TcpClientStream::new(self.dns_addr);
 
         // We would expect a DNS request to be responded to quickly, but add a timeout
         // to ensure that we don't wait for ever if the DNS server does not respond.
         let timeout = Duration::from_millis(30000);
-        let mut dns_client =
+        let dns_client =
             trust_dns::client::ClientFuture::with_timeout(
                 stream,
                 sender,
-                &io.handle(),
                 timeout,
                 None);
+        let mut dns_client = runtime.block_on(dns_client).unwrap();
 
         // Check if this is a domain name or not before trying to use DNS resolution.
-        let (host, port) = match host.parse() {
+        let (ref host, port) = match host.parse() {
             Err(_) => {
 
                 debug!("Trying to resolve {}://{}", scheme, &host);
@@ -104,9 +104,11 @@ impl<C: NetworkConnector<Stream = S>, S: NetworkStream + Send> NetworkConnector
 
                 debug!("Sending DNS request");
 
-                match io.run(dns_client.query(name.clone(),
+                let query = dns_client.query(name.clone(),
                                               trust_dns::rr::DNSClass::IN,
-                                              trust_record_type)) {
+                                              trust_record_type);
+                let result = runtime.block_on(query);
+                match result {
                     Ok(res) => {
                         let answers = res.answers();
 
