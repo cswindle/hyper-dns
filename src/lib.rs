@@ -4,8 +4,6 @@
 extern crate log;
 extern crate hyper;
 extern crate rand;
-extern crate tokio_core;
-extern crate tokio_reactor;
 extern crate trust_dns;
 extern crate futures;
 
@@ -41,6 +39,7 @@ pub struct DnsConnector<C> {
 impl<C> DnsConnector<C>
 where C: Connect,
 {
+    /// Docs
     pub fn new(dns_addr: std::net::SocketAddr, connector: C) -> DnsConnector<C> {
         Self::new_with_resolve_type(dns_addr, connector, RecordType::AUTO)
     }
@@ -75,6 +74,8 @@ where C: 'static,
 
         let connector = self.connector.clone();
         let force_https = self.force_https;
+
+        debug!("Trying to resolve {:?}", dst);
 
         // We would expect a DNS request to be responded to quickly, but add a timeout
         // to ensure that we don't wait for ever if the DNS server does not respond.
@@ -129,15 +130,19 @@ where C: 'static,
                         trust_dns::rr::DNSClass::IN,
                         trust_record_type)
                     })
-                    .or_else(|_| {
+                    .or_else(|e| {
+                        debug!("Received error: {:?}", e);
                         return future::err(std::io::Error::new(std::io::ErrorKind::Other,
                                                        "Failed to query DNS server")
                                            .into());
                     })
                     .and_then(move |res| {
+                        debug!("Got answers: {:?}", res);
+
                         let answers = res.answers();
 
                         if answers.is_empty() {
+                            debug!("No valid answers received");
                             return future::err(std::io::Error::new(std::io::ErrorKind::Other,
                                                            "No valid DNS answers")
                                                .into());
@@ -197,7 +202,7 @@ where C: 'static,
                         new_dst.set_host(&ip).expect("Failed to set host");
 
                         if force_https {
-                            new_dst.set_scheme("HTTPS").expect("Failed to set scheme to HTTPS");
+                            new_dst.set_scheme("https").expect("Failed to set scheme to HTTPS");
                         }
 
                         if let Some(port) = port {
