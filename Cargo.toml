@@ -5,7 +5,7 @@ keywords = ["hyper", "dns"]
 license = "MIT"
 name = "hyper-dns"
 repository = "https://github.com/cswindle/hyper-dns"
-version = "0.11.0"
+version = "0.3.0"
 
 [badges]
 
